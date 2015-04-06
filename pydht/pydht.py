@@ -4,15 +4,14 @@ import socket
 import SocketServer
 import threading
 import time
+import hashlib
 
 from .bucketset import BucketSet
-from .hashing import hash_function, random_id
 from .peer import Peer
 from .shortlist import Shortlist
 
 k = 20
 alpha = 3
-id_bits = 128
 iteration_sleep = 1
 
 class DHTRequestHandler(SocketServer.BaseRequestHandler):
@@ -91,12 +90,14 @@ class DHTServer(SocketServer.ThreadingMixIn, SocketServer.UDPServer):
         self.send_lock = threading.Lock()
 
 class DHT(object):
-    def __init__(self, host, port, id=None, boot_host=None, boot_port=None):
+    def __init__(self, host, port, id=None, boot_host=None, boot_port=None, hash_algo=hashlib.md5):
+        self.hash_algo = hash_algo
+        self.id_bits = len(hash_algo("some string to get hash length").digest()) * 8
         if not id:
-            id = random_id()
+            id = random.randint(0, (2 ** self.id_bits)-1)
         self.peer = Peer(unicode(host), port, id)
         self.data = {}
-        self.buckets = BucketSet(k, id_bits, self.peer.id)
+        self.buckets = BucketSet(k, self.id_bits, self.peer.id)
         self.rpc_ids = {} # should probably have a lock for this
         self.server = DHTServer(self.peer.address(), DHTRequestHandler)
         self.server.dht = self
@@ -104,19 +105,22 @@ class DHT(object):
         self.server_thread.daemon = True
         self.server_thread.start()
         self.bootstrap(unicode(boot_host), boot_port)
+
+    def hash_function(self, data):
+        return int(self.hash_algo(data).hexdigest(), 16)
     
     def iterative_find_nodes(self, key, boot_peer=None):
         shortlist = Shortlist(k, key)
         shortlist.update(self.buckets.nearest_nodes(key, limit=alpha))
         if boot_peer:
-            rpc_id = random.getrandbits(id_bits)
+            rpc_id = random.getrandbits(self.id_bits)
             self.rpc_ids[rpc_id] = shortlist
             boot_peer.find_node(key, rpc_id, socket=self.server.socket, peer_id=self.peer.id)
         while (not shortlist.complete()) or boot_peer:
             nearest_nodes = shortlist.get_next_iteration(alpha)
             for peer in nearest_nodes:
                 shortlist.mark(peer)
-                rpc_id = random.getrandbits(id_bits)
+                rpc_id = random.getrandbits(self.id_bits)
                 self.rpc_ids[rpc_id] = shortlist
                 peer.find_node(key, rpc_id, socket=self.server.socket, peer_id=self.peer.id) ######
             time.sleep(iteration_sleep)
@@ -130,7 +134,7 @@ class DHT(object):
             nearest_nodes = shortlist.get_next_iteration(alpha)
             for peer in nearest_nodes:
                 shortlist.mark(peer)
-                rpc_id = random.getrandbits(id_bits)
+                rpc_id = random.getrandbits(self.id_bits)
                 self.rpc_ids[rpc_id] = shortlist
                 peer.find_value(key, rpc_id, socket=self.server.socket, peer_id=self.peer.id) #####
             time.sleep(iteration_sleep)
@@ -142,7 +146,7 @@ class DHT(object):
             self.iterative_find_nodes(self.peer.id, boot_peer=boot_peer)
                     
     def __getitem__(self, key):
-        hashed_key = hash_function(key)
+        hashed_key = self.hash_function(key)
         if hashed_key in self.data:
             return self.data[hashed_key]
         result = self.iterative_find_value(hashed_key)
@@ -151,7 +155,7 @@ class DHT(object):
         raise KeyError
         
     def __setitem__(self, key, value):
-        hashed_key = hash_function(key)
+        hashed_key = self.hash_function(key)
         nearest_nodes = self.iterative_find_nodes(hashed_key)
         if not nearest_nodes:
             self.data[hashed_key] = value

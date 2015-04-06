@@ -1,7 +1,4 @@
-import hashlib
 import json
-
-from .hashing import hash_function
 
 class Peer(object):
     ''' DHT Peer Information'''
